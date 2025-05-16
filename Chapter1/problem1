@@ -1,1 +1,218 @@
+`timescale 1ns/1ps
 
+import uvm_pkg::*;
+`include "uvm_macros.svh"
+
+// and_gate.v - DUT
+module and_gate (
+  input logic a,
+  input logic b,
+  output logic y
+);
+  assign y = a & b;
+endmodule
+
+
+// and_if.sv - Interface
+interface and_if(input logic clk);
+  logic a;
+  logic b;
+  logic y;
+endinterface
+
+
+// and_txn.sv - Transaction
+class and_txn extends uvm_sequence_item;
+  rand bit a;
+  rand bit b;
+  bit y;
+
+  `uvm_object_utils(and_txn)
+
+  function new(string name="and_txn");
+    super.new(name);
+  endfunction
+
+  function string convert2string();
+    return $sformatf("a=%0b b=%0b y=%0b", a, b, y);
+  endfunction
+endclass
+
+
+// and_sequencer.sv
+class and_sequencer extends uvm_sequencer#(and_txn);
+  `uvm_component_utils(and_sequencer)
+  function new(string name, uvm_component parent);
+    super.new(name, parent);
+  endfunction
+endclass
+
+
+// and_driver.sv
+class and_driver extends uvm_driver#(and_txn);
+  `uvm_component_utils(and_driver)
+
+  virtual and_if vif;
+
+  function new(string name, uvm_component parent);
+    super.new(name, parent);
+  endfunction
+
+  function void build_phase(uvm_phase phase);
+    super.build_phase(phase);
+    if (!uvm_config_db#(virtual and_if)::get(this, "", "vif", vif))
+      `uvm_fatal("NOVIF", "Virtual interface not found")
+  endfunction
+
+  task run_phase(uvm_phase phase);
+    forever begin
+      and_txn txn;
+      seq_item_port.get_next_item(txn);
+      vif.a <= txn.a;
+      vif.b <= txn.b;
+      #1;
+      txn.y = vif.y;
+      seq_item_port.item_done();
+    end
+  endtask
+endclass
+
+
+// and_monitor.sv
+class and_monitor extends uvm_monitor;
+  `uvm_component_utils(and_monitor)
+
+  virtual and_if vif;
+
+  function new(string name, uvm_component parent);
+    super.new(name, parent);
+  endfunction
+
+  function void build_phase(uvm_phase phase);
+    super.build_phase(phase);
+    if (!uvm_config_db#(virtual and_if)::get(this, "", "vif", vif))
+      `uvm_fatal("NOVIF", "Virtual interface not found")
+  endfunction
+
+  task run_phase(uvm_phase phase);
+    forever begin
+      #1;
+      `uvm_info("MON", $sformatf("a=%0b b=%0b y=%0b", vif.a, vif.b, vif.y), UVM_LOW)
+    end
+  endtask
+endclass
+
+
+// and_agent.sv
+class and_agent extends uvm_agent;
+  `uvm_component_utils(and_agent)
+
+  and_driver drv;
+  and_sequencer sqr;
+  and_monitor mon;
+
+  function new(string name, uvm_component parent);
+    super.new(name, parent);
+  endfunction
+
+  function void build_phase(uvm_phase phase);
+    super.build_phase(phase);
+    sqr = and_sequencer::type_id::create("sqr", this);
+    drv = and_driver::type_id::create("drv", this);
+    mon = and_monitor::type_id::create("mon", this);
+  endfunction
+
+  function void connect_phase(uvm_phase phase);
+    drv.seq_item_port.connect(sqr.seq_item_export);
+  endfunction
+endclass
+
+
+// and_env.sv
+class and_env extends uvm_env;
+  `uvm_component_utils(and_env)
+
+  and_agent agt;
+
+  function new(string name, uvm_component parent);
+    super.new(name, parent);
+  endfunction
+
+  function void build_phase(uvm_phase phase);
+    super.build_phase(phase);
+    agt = and_agent::type_id::create("agt", this);
+  endfunction
+endclass
+
+
+// and_sequence.sv
+class and_sequence extends uvm_sequence#(and_txn);
+  `uvm_object_utils(and_sequence)
+
+  function new(string name="and_sequence");
+    super.new(name);
+  endfunction
+
+  task body();
+    for (int i = 0; i < 5; i++) begin
+      and_txn txn = and_txn::type_id::create("txn");
+      start_item(txn);
+      assert(txn.randomize());
+      finish_item(txn);
+    end
+  endtask
+endclass
+
+
+// and_test.sv
+class and_test extends uvm_test;
+  `uvm_component_utils(and_test)
+
+  and_env env;
+
+  function new(string name, uvm_component parent);
+    super.new(name, parent);
+  endfunction
+
+  function void build_phase(uvm_phase phase);
+    super.build_phase(phase);
+    env = and_env::type_id::create("env", this);
+  endfunction
+
+  task run_phase(uvm_phase phase);
+    and_sequence seq = and_sequence::type_id::create("seq");
+    phase.raise_objection(this);
+    seq.start(env.agt.sqr);
+    phase.drop_objection(this);
+  endtask
+endclass
+
+
+// testbench.sv
+
+
+module top;
+  logic clk;
+  and_if intf(clk);
+
+  // Clock generation
+  initial clk = 0;
+  always #5 clk = ~clk;
+
+  // DUT instantiation
+  and_gate dut (
+    .a(intf.a),
+    .b(intf.b),
+    .y(intf.y)
+  );
+  
+  initial begin
+    $dumpfile("dump.vcd");
+    $dumpvars(0, top); 
+  end
+
+  initial begin
+    uvm_config_db#(virtual and_if)::set(null, "*", "vif", intf);
+    run_test("and_test");
+  end
+endmodule
