@@ -1,3 +1,33 @@
+PROBLEM STATEMENTS:
+
+Problem Statement 1: Basic UVM Testbench for a Simple DUT
+Objective: Create a basic UVM testbench to simulate a simple DUT (like a 2-input AND gate).
+
+Tasks:
+
+Create a SystemVerilog module for a 2-input AND gate (DUT).
+
+Build a minimal UVM environment with:
+
+A driver that drives random input values to the DUT.
+
+A monitor that observes the output.
+
+An agent that combines the driver and monitor.
+
+An environment (env) that instantiates the agent.
+
+A test that runs this environment.
+
+Use factory registration and factory overrides for at least one component.
+
+Goal: Understand how the testbench architecture connects and how data flows through components.
+
+----------------------------------------------------------------------------------------------------------------------------------
+##################################################################################################################################
+----------------------------------------------------------------------------------------------------------------------------------
+
+
 `timescale 1ns/1ps
 
 import uvm_pkg::*;
