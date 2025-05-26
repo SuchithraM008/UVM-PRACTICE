@@ -14,3 +14,285 @@ Add print statements in each UVM phase (e.g., build_phase, connect_phase, run_ph
 
 Goal: Practice UVM phasing and learn to scale the architecture from component to integration-level
 
+
+// --------------- DUTs ----------------
+module dut_and(input logic a, b, output logic y);
+  assign y = a & b;
+endmodule
+
+module dut_or(input logic a, b, output logic y);
+  assign y = a | b;
+endmodule
+
+
+`timescale 1ns/1ps
+
+import uvm_pkg::*;
+`include "uvm_macros.svh"
+
+// ---------------- Interfaces ----------------
+interface and_if(input bit clk);
+  logic a, b, y;
+endinterface
+
+interface or_if(input bit clk);
+  logic a, b, y;
+endinterface
+
+// ---------------- Sequence Item ----------------
+class and_or_seq_item extends uvm_sequence_item;
+  rand bit a, b;
+  function new(string name = "and_or_seq_item");
+    super.new(name);
+  endfunction
+
+  `uvm_object_utils(and_or_seq_item)
+
+  function void do_print(uvm_printer printer);
+    super.do_print(printer);
+    printer.print_field("a", a, $bits(a));
+    printer.print_field("b", b, $bits(b));
+  endfunction
+endclass
+
+// ---------------- Sequencer ----------------
+class and_or_sequencer extends uvm_sequencer#(and_or_seq_item);
+  `uvm_component_utils(and_or_sequencer)
+  function new(string name, uvm_component parent);
+    super.new(name, parent);
+  endfunction
+endclass
+
+// ---------------- Sequence ----------------
+class and_or_sequence extends uvm_sequence#(and_or_seq_item);
+  `uvm_object_utils(and_or_sequence)
+
+  function new(string name = "and_or_sequence");
+    super.new(name);
+  endfunction
+
+  task body();
+    and_or_seq_item item;
+    repeat (5) begin
+      `uvm_info("SEQ", "Starting item", UVM_MEDIUM)
+      item = and_or_seq_item::type_id::create("item");
+      assert(item.randomize());
+      start_item(item);
+      finish_item(item);
+    end
+  endtask
+endclass
+
+// ---------------- AND Driver ----------------
+class and_driver extends uvm_driver#(and_or_seq_item);
+  `uvm_component_utils(and_driver)
+  virtual and_if vif;
+
+  function new(string name, uvm_component parent);
+    super.new(name, parent);
+  endfunction
+
+  function void build_phase(uvm_phase phase);
+    super.build_phase(phase);
+    if (!uvm_config_db#(virtual and_if)::get(this, "", "and_if", vif))
+      `uvm_fatal("NOVIF", "virtual interface must be set")
+  endfunction
+
+  task run_phase(uvm_phase phase);
+    super.run_phase(phase);
+    forever begin
+      seq_item_port.get_next_item(req);
+      vif.a = req.a;
+      vif.b = req.b;
+      #1;
+      seq_item_port.item_done();
+    end
+  endtask
+endclass
+
+// ---------------- AND Monitor ----------------
+class and_monitor extends uvm_monitor;
+  `uvm_component_utils(and_monitor)
+  virtual and_if vif;
+
+  function new(string name, uvm_component parent);
+    super.new(name, parent);
+  endfunction
+
+  function void build_phase(uvm_phase phase);
+    super.build_phase(phase);
+    if (!uvm_config_db#(virtual and_if)::get(this, "", "and_if", vif))
+      `uvm_fatal("NOVIF", "virtual interface must be set")
+  endfunction
+
+  task run_phase(uvm_phase phase);
+    super.run_phase(phase);
+    forever begin
+      @(posedge vif.clk);
+      $display("[AND MON] a=%0b b=%0b y=%0b", vif.a, vif.b, vif.y);
+    end
+  endtask
+endclass
+
+// ---------------- AND Agent ----------------
+class and_agent extends uvm_agent;
+  `uvm_component_utils(and_agent)
+
+  and_driver drv;
+  and_monitor mon;
+  and_or_sequencer seqr;
+
+  function new(string name, uvm_component parent);
+    super.new(name, parent);
+  endfunction
+
+  function void build_phase(uvm_phase phase);
+    super.build_phase(phase);
+    drv = and_driver::type_id::create("drv", this);
+    mon = and_monitor::type_id::create("mon", this);
+    seqr = and_or_sequencer::type_id::create("seqr", this);
+  endfunction
+
+  function void connect_phase(uvm_phase phase);
+    drv.seq_item_port.connect(seqr.seq_item_export);
+  endfunction
+endclass
+
+// ---------------- OR Driver ----------------
+class or_driver extends uvm_driver#(and_or_seq_item);
+  `uvm_component_utils(or_driver)
+  virtual or_if vif;
+
+  function new(string name, uvm_component parent);
+    super.new(name, parent);
+  endfunction
+
+  function void build_phase(uvm_phase phase);
+    super.build_phase(phase);
+    if (!uvm_config_db#(virtual or_if)::get(this, "", "or_if", vif))
+      `uvm_fatal("NOVIF", "virtual interface must be set")
+  endfunction
+
+  task run_phase(uvm_phase phase);
+    super.run_phase(phase);
+    forever begin
+      seq_item_port.get_next_item(req);
+      vif.a = req.a;
+      vif.b = req.b;
+      #1;
+      seq_item_port.item_done();
+    end
+  endtask
+endclass
+
+// ---------------- OR Monitor ----------------
+class or_monitor extends uvm_monitor;
+  `uvm_component_utils(or_monitor)
+  virtual or_if vif;
+
+  function new(string name, uvm_component parent);
+    super.new(name, parent);
+  endfunction
+
+  function void build_phase(uvm_phase phase);
+    super.build_phase(phase);
+    if (!uvm_config_db#(virtual or_if)::get(this, "", "or_if", vif))
+      `uvm_fatal("NOVIF", "virtual interface must be set")
+  endfunction
+
+  task run_phase(uvm_phase phase);
+    super.run_phase(phase);
+    forever begin
+      @(posedge vif.clk);
+      $display("[OR MON] a=%0b b=%0b y=%0b", vif.a, vif.b, vif.y);
+    end
+  endtask
+endclass
+
+// ---------------- OR Agent ----------------
+class or_agent extends uvm_agent;
+  `uvm_component_utils(or_agent)
+
+  or_driver drv;
+  or_monitor mon;
+  and_or_sequencer seqr;
+
+  function new(string name, uvm_component parent);
+    super.new(name, parent);
+  endfunction
+
+  function void build_phase(uvm_phase phase);
+    super.build_phase(phase);
+    drv = or_driver::type_id::create("drv", this);
+    mon = or_monitor::type_id::create("mon", this);
+    seqr = and_or_sequencer::type_id::create("seqr", this);
+  endfunction
+
+  function void connect_phase(uvm_phase phase);
+    drv.seq_item_port.connect(seqr.seq_item_export);
+  endfunction
+endclass
+
+// ---------------- Environment ----------------
+class top_env extends uvm_env;
+  `uvm_component_utils(top_env)
+
+  and_agent andA;
+  or_agent orA;
+
+  function new(string name, uvm_component parent);
+    super.new(name, parent);
+  endfunction
+
+  function void build_phase(uvm_phase phase);
+    super.build_phase(phase);
+    andA = and_agent::type_id::create("andA", this);
+    orA = or_agent::type_id::create("orA", this);
+  endfunction
+endclass
+
+// ---------------- Test ----------------
+class test_top extends uvm_test;
+  `uvm_component_utils(test_top)
+  top_env env;
+
+  function new(string name, uvm_component parent);
+    super.new(name, parent);
+  endfunction
+
+  function void build_phase(uvm_phase phase);
+    super.build_phase(phase);
+    env = top_env::type_id::create("env", this);
+  endfunction
+  
+  task run_phase(uvm_phase phase);
+    and_or_sequence seq;
+    phase.raise_objection(this);
+
+    seq = and_or_sequence::type_id::create("seq");
+    seq.start(env.andA.seqr);  
+
+    seq = and_or_sequence::type_id::create("seq");
+    seq.start(env.orA.seqr);   
+
+    phase.drop_objection(this);
+  endtask
+endclass
+
+// ---------------- Testbench ----------------
+module testbench;
+  bit clk = 0;
+  always #5 clk = ~clk;
+
+  and_if and_vif(clk);
+  or_if  or_vif(clk);
+
+  dut_and u_and (.a(and_vif.a), .b(and_vif.b), .y(and_vif.y));
+  dut_or  u_or  (.a(or_vif.a),  .b(or_vif.b),  .y(or_vif.y));
+
+  initial begin
+    uvm_config_db#(virtual and_if)::set(null, "*", "and_if", and_vif);
+    uvm_config_db#(virtual or_if)::set(null, "*", "or_if", or_vif);
+    run_test("test_top");
+  end
+endmodule
