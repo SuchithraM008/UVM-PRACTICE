@@ -1,0 +1,941 @@
+// Code your design here
+`timescale 1ns / 1ps
+`timescale 1ns / 1ps
+
+module clk_gen(
+    input clk,
+    input rst,
+    input [16:0] baud,
+    output reg tx_clk,
+    output reg rx_clk
+);
+
+int rx_max = 0, tx_max = 0;
+int rx_count = 0, tx_count = 0;
+
+// Simulation mode: 1 = fast sim, 0 = real baud
+parameter SIM_MODE = 1;
+
+// Set rx_max and tx_max based on baud or simulation mode
+always @(posedge clk) begin
+    if(rst) begin
+        rx_max <= 0;
+        tx_max <= 0;
+    end else begin
+        if(SIM_MODE) begin
+            // Fast simulation values
+            rx_max <= 0;  
+            tx_max <= 15;
+        end else begin
+            // Realistic baud rate values
+            case(baud)
+                4800   : begin rx_max <= 651;   tx_max <= 10416; end
+                9600   : begin rx_max <= 325;   tx_max <= 5208;  end
+                14400  : begin rx_max <= 217;   tx_max <= 3472;  end
+                19200  : begin rx_max <= 163;   tx_max <= 2604;  end
+                38400  : begin rx_max <= 81;    tx_max <= 1302;  end
+                57600  : begin rx_max <= 54;    tx_max <= 868;   end
+                115200 : begin rx_max <= 27;    tx_max <= 434;   end
+                128000 : begin rx_max <= 24;    tx_max <= 392;  end
+                default: begin rx_max <= 325;   tx_max <= 5208; end
+            endcase
+        end
+    end
+end
+
+// RX clock generation
+always @(posedge clk) begin
+    if(rst) begin
+        rx_count <= 0;
+        rx_clk <= 0;
+    end else begin
+        if(rx_count < rx_max)
+            rx_count <= rx_count + 1;
+        else begin
+            rx_clk <= ~rx_clk;
+            rx_count <= 0;
+        end
+    end
+end
+
+// TX clock generation
+always @(posedge clk) begin
+    if(rst) begin
+        tx_count <= 0;
+        tx_clk <= 0;
+    end else begin
+        if(tx_count < tx_max)
+            tx_count <= tx_count + 1;
+        else begin
+            tx_clk <= ~tx_clk;
+            tx_count <= 0;
+        end
+    end
+end
+
+endmodule
+ 
+
+//////////////////////////////////////////////////
+module uart_tx(
+    input tx_clk,tx_start,
+    input rst, 
+    input [7:0] tx_data,
+    input [3:0] length,
+    input parity_type,parity_en,
+    input stop2,
+    output reg tx, tx_done, tx_err
+    );
+    
+    logic [7:0] tx_reg;
+    
+    logic start_b = 0;
+    logic stop_b  = 1;
+    logic parity_bit = 0;
+    integer count = 0;
+    
+    typedef enum bit [2:0]  {idle = 0, start_bit = 1, send_data = 2, send_parity = 3, send_first_stop = 4, send_sec_stop = 5, done = 6} state_type;
+    state_type state = idle, next_state = idle;
+    
+    ////////////////////parity generator
+    always@(posedge tx_clk)
+    begin
+       if(parity_type == 1'b1) ///odd
+         begin
+            case(length)
+              4'd5 : parity_bit = ^(tx_data[4:0]); //xor
+              4'd6 : parity_bit = ^(tx_data[5:0]); 
+              4'd7 : parity_bit = ^(tx_data[6:0]);
+              4'd8 : parity_bit = ^(tx_data[7:0]);
+              default : parity_bit = 1'b0; 
+              endcase
+         end
+        else
+         begin
+            case(length)
+              4'd5 : parity_bit = ~^(tx_data[4:0]);//xnor
+              4'd6 : parity_bit = ~^(tx_data[5:0]); 
+              4'd7 : parity_bit = ~^(tx_data[6:0]);
+              4'd8 : parity_bit = ~^(tx_data[7:0]);
+              default : parity_bit = 1'b0; 
+              endcase
+         end 
+    end
+    
+    ///////////////////// reset detector
+    always@(posedge tx_clk)
+    begin
+      if(rst)
+       state <= idle;
+      else
+       state <= next_state;
+    end
+    
+    
+    ///////////////////next state decoder + output decoder
+    
+    
+    always@(*)
+    begin
+    case(state)
+      idle :
+       begin
+               tx_done     = 1'b0; 
+               tx          = 1'b1;
+               tx_reg      = {(8){1'b0}}; 
+               tx_err      = 0;
+               if(tx_start) 
+                  next_state = start_bit;
+                else
+                  next_state = idle;
+       end
+      ////////////////////////
+      start_bit : 
+      begin
+                tx_reg      = tx_data;
+                tx          = start_b;
+                next_state  = send_data;
+      end  
+      ///////////////////////////
+        
+      send_data:
+       begin
+                if(count < (length - 1)) 
+                   begin
+                     next_state = send_data;
+                     tx         = tx_reg[count];
+                   end
+                else if (parity_en)
+                    begin
+                    tx         = tx_reg[count];
+                    next_state  = send_parity;
+                    end
+                else
+                    begin
+                    tx         = tx_reg[count];
+                    next_state  = send_first_stop;
+                    end
+      end  
+      ////////////////////////////////////////////////
+      
+      send_parity: 
+      begin
+                 tx          = parity_bit;
+                 next_state  = send_first_stop;
+      end
+     ///////////////////////////////////////////////////
+      
+      send_first_stop : 
+      begin
+          tx  = stop_b;
+       if(stop2)
+         next_state  = send_sec_stop;       
+        else
+         next_state  = done;
+      end
+      ////////////////////////////////////
+      send_sec_stop : 
+      begin
+          tx          = stop_b;
+          next_state  = done;
+      end
+      
+   
+    ////////////////////////////////
+    
+    done :
+    begin
+         tx_done        = 1'b1;
+         next_state  = idle;
+    end
+    //////////////////////////////////////////////////
+    default : next_state  = idle;
+    
+    endcase
+    end
+ ///////////////////////////////////////////////////////////////////////////////////////////////////////////
+ 
+ 
+ always@(posedge tx_clk)
+ begin
+ case(state)
+   idle : begin
+     count <= 0;
+   end
+   
+  start_bit : begin
+    count  <= 0;
+  end 
+  
+  send_data: begin
+    count <= count + 1;
+  end
+   
+  send_parity: begin
+     count <= 0;
+  end 
+ 
+  send_first_stop : begin
+    count <= 0;
+  end
+ 
+  send_sec_stop : begin
+    count <= 0;
+  end
+  
+  done : begin
+    count <= 0;
+  end
+  
+    default : count <= 0;
+     
+ endcase
+ end
+ 
+ ////////////////////////////////////////////////////////////////////
+ 
+    
+endmodule
+ 
+///////////////////////////////////////////////////UART RX
+ 
+module uart_rx(
+    input rx_clk,rx_start,
+    input rst, rx,
+    input [3:0] length,
+    input parity_type,parity_en,
+    input stop2,
+    output reg [7:0] rx_out,
+    output logic rx_done, rx_error
+    );
+    
+ logic parity = 0;   
+ logic [7:0] datard = 0;
+ int count = 0;
+ int bit_count = 0;
+ 
+ typedef enum bit [2:0] {idle = 0, start_bit = 1, recv_data = 2, check_parity = 3, check_first_stop = 4, check_sec_stop= 5, done = 6} state_type;
+ state_type state = idle, next_state = idle;
+     ///////////////////// reset detector
+    always@(posedge rx_clk)
+    begin
+      if(rst)
+       state <= idle;
+      else
+       state <= next_state;
+    end
+    
+ /////////////////////////////////////////////////////////
+ ///////////////////next_State decoder + output
+ 
+     ///////////////////// reset detector
+    always@(*)
+    begin
+      case(state)
+         idle: 
+          begin
+             rx_done  = 0;
+             rx_error = 0;
+             if(rx_start && !rx)
+                next_state = start_bit;
+             else
+                next_state = idle;
+                
+         end
+         
+         ////////////////////////////////////////////////
+         
+         start_bit: 
+         begin
+               if(count == 7 && rx)
+                  begin
+                   next_state = idle;
+                  end
+                else if (count == 15)
+                  begin
+                   next_state = recv_data;
+                  end
+                else
+                  begin
+                  next_state = start_bit;
+                  end
+         end
+     
+     //////////////////////////////////////////////////////////////////  
+            recv_data: begin
+              
+              
+              
+              
+              
+               if(count == 7)
+                   begin
+                   datard[7:0]   =  {rx,datard[7:1]};   
+                   end
+               else if(count == 15 && bit_count == (length - 1))
+                  begin
+                    
+                     case(length)
+                     5: rx_out = datard[7:3];
+                     6: rx_out = datard[7:2];
+                     7: rx_out = datard[7:1];
+                     8: rx_out = datard[7:0];
+                     default : rx_out = 8'h00;
+                   endcase
+                 //////////////////////////////////   
+  
+                if(parity_type)
+                  parity = ^datard;
+               else
+                  parity  = ~^datard;
+                    ////////////////////////////////////////////
+                  
+                     if(parity_en)
+                        next_state = check_parity;
+                     else
+                        next_state = check_first_stop;
+                    /////////////////////////////////////////
+                  end
+                else
+                   next_state = recv_data;
+                   
+             end  
+         //////////////////////////////////////////////////
+         
+          check_parity: begin
+          
+ 
+                  
+              if(count == 7) 
+                  begin
+                    if(rx == parity)
+                       rx_error = 1'b0;
+                    else
+                       rx_error = 1'b1;
+                   end  
+             else if (count == 15) 
+                    begin  
+                    next_state = check_first_stop;
+                    end
+             else
+                    begin
+                    next_state = check_parity;
+                    end
+                        
+          end       
+     ////////////////////////////////////////////////////////////////////////////       
+            check_first_stop : 
+            begin
+               if(count == 7)
+                   begin
+                      if(rx != 1'b1)
+                          rx_error = 1'b1;
+                      else
+                          rx_error = 1'b0;
+                   end
+                else if (count == 15)
+                   begin
+                     if(stop2)
+                        next_state = check_sec_stop;
+                     else
+                        next_state = done; 
+                   end
+            end
+            
+  ////////////////////////////////////////////////////////////////////////////////          
+            check_sec_stop: begin
+              if(count == 7)
+                   begin
+                      if(rx != 1'b1)
+                          rx_error = 1'b1;
+                      else
+                          rx_error = 1'b0;
+                   end
+                else if (count == 15)
+                   begin
+                        next_state = done; 
+                   end
+            
+             end
+             
+    /////////////////////////////////////////////////////////////////////////         
+        done :  begin
+           rx_done = 1'b1;
+           next_state = idle;
+           rx_error = 1'b0;
+        end    
+  endcase
+    end
+    
+ ///////////////////////////////////////////////////////////////////////////////////////////////////
+ 
+      ///////////////////// reset detector
+    always@(posedge rx_clk)
+    begin
+      case(state)
+         idle: 
+          begin
+             count     <= 0;
+             bit_count <= 0;
+         end
+         
+         ////////////////////////////////////////////////
+         
+         start_bit: 
+         begin
+            if(count < 15)
+              count <= count + 1;
+            else
+              count <= 0;
+         end
+     
+     /////////////////////////////////////////////////////////////////  
+            recv_data: begin
+            if(count < 15)
+              count <= count + 1;
+            else begin
+              count <= 0;
+              bit_count <= bit_count + 1;
+              end
+   
+             end  
+         //////////////////////////////////////////////////
+         
+          check_parity: begin
+              if(count < 15)
+              count <= count + 1;
+            else
+              count <= 0;
+ 
+                        
+          end       
+     ////////////////////////////////////////////////////////////////////////////       
+            check_first_stop : 
+            begin
+             if(count < 15)
+              count <= count + 1;
+            else
+              count <= 0;
+            end
+            
+  ////////////////////////////////////////////////////////////////////////////////          
+            check_sec_stop: begin
+             if(count < 15)
+              count <= count + 1;
+            else
+              count <= 0;
+           
+             end
+             
+    /////////////////////////////////////////////////////////////////////////         
+        done :  begin
+           count <= 0;
+           bit_count <= 0;
+        end    
+  endcase
+    end
+    
+ 
+ endmodule
+ 
+ 
+ ///////////////////////////////////////////////////////////////////
+ 
+ 
+ 
+ 
+    
+    /////////////////////////////////
+ 
+ module uart_top
+ (
+ input clk, rst,
+ input tx_start, rx_start,
+ input [7:0] tx_data,
+ input [16:0] baud,
+ input [3:0] length,
+ input parity_type, parity_en,
+ input stop2,
+ output tx_done,rx_done, tx_err,rx_err,
+ output [7:0] rx_out
+ );
+ 
+wire tx_clk, rx_clk;
+wire tx_rx;
+ 
+clk_gen clk_dut (clk, rst, baud,tx_clk, rx_clk); 
+uart_tx tx_dut (tx_clk,tx_start, rst, tx_data, length, parity_type, parity_en, stop2, tx_rx, tx_done, tx_err);
+uart_rx rx_dut (rx_clk, rx_start, rst, tx_rx, length,parity_type, parity_en, stop2,rx_out,rx_done, rx_err);
+ 
+ 
+ 
+ endmodule
+ 
+ /////////////////////////////////////////////////////////////////////
+interface uart_if;
+ logic clk, rst;
+ logic tx_start, rx_start;
+ logic [7:0] tx_data;
+ logic [16:0] baud;
+ logic [3:0] length;
+ logic parity_type, parity_en;
+ logic stop2;
+ logic tx_done,rx_done, tx_err,rx_err;
+ logic [7:0] rx_out;   
+ 
+endinterface
+
+
+
+////////////////////////////////////////////////////////////////////
+`include "uvm_pkg.sv"
+import uvm_pkg::*;
+
+//====================================================
+// Transaction Class
+//====================================================
+class transaction extends uvm_sequence_item;
+  `uvm_object_utils(transaction)
+
+  rand bit tx_start;
+  rand bit rx_start;
+  rand bit [7:0] tx_data;
+  rand bit [16:0] baud;
+  rand bit [3:0] length;
+  rand bit stop2;
+  rand bit parity_type, parity_en;
+
+  bit tx_done;
+  bit rx_done;
+  bit tx_err;
+  bit rx_err;
+  bit [7:0] rx_out;
+
+  constraint c_tx_start { tx_start == 1; }
+  constraint c_rx_start { rx_start == 1; }
+  constraint c_len_range { length inside {[5:8]}; }
+  constraint c_data_by_length {
+  if (length == 5) tx_data < 32;
+  else if (length == 6) tx_data < 64;
+  else if (length == 7) tx_data < 128;
+  else                  tx_data < 256;
+}
+
+  function new(string name="transaction");
+    super.new(name);
+  endfunction
+endclass
+
+//====================================================
+// Bring-up Sequence
+//====================================================
+class bring_up extends uvm_sequence#(transaction);
+  `uvm_object_utils(bring_up)
+  transaction tr;
+
+  function new(string name="bring_up");
+    super.new(name);
+  endfunction
+
+  virtual task body();
+    tr = transaction::type_id::create("tr");
+    start_item(tr);
+
+    // Scenario 1.1 values
+    tr.tx_data = 8'hA5;
+    tr.baud    = 115200;
+    tr.length  = 8;
+    tr.parity_en = 0;
+    tr.stop2   = 0;
+    tr.tx_start = 1;
+    tr.rx_start = 1;
+
+    finish_item(tr);
+
+    `uvm_info("SEQ", $sformatf(
+      "Scenario1.1: tx_data=0x%0h baud=%0d length=%0d parity_en=%0d stop2=%0d",
+      tr.tx_data, tr.baud, tr.length, tr.parity_en, tr.stop2
+    ), UVM_NONE);
+  endtask
+endclass
+///////////////////////////////////////////////////////////////
+class rand_up extends uvm_sequence#(transaction);
+  `uvm_object_utils(rand_up)
+  transaction tr;
+
+  function new(string name="rand_up");
+    super.new(name);
+  endfunction
+
+  virtual task body();
+  repeat (5) begin
+    tr = transaction::type_id::create("tr");
+    start_item(tr);
+    assert(tr.randomize());  // Randomize first
+    finish_item(tr); 
+    `uvm_info("SEQ",
+      $sformatf("Rand: tx_data=0x%0h baud=%0d length=%0d parity_en=%0d stop2=%0d",
+      tr.tx_data, tr.baud, tr.length, tr.parity_en, tr.stop2),
+      UVM_NONE);
+  end
+endtask
+
+endclass
+ 
+
+class drv extends uvm_driver #(transaction);
+  `uvm_component_utils(drv)
+
+  virtual uart_if uartif;
+
+  function new(string name = "drv", uvm_component parent = null);
+    super.new(name, parent);
+  endfunction
+
+  virtual function void build_phase(uvm_phase phase);
+    super.build_phase(phase);
+    if (!uvm_config_db#(virtual uart_if)::get(this, "", "uartif", uartif))
+      `uvm_error("DRV", "Cannot get UART interface");
+  endfunction
+
+  task drive_reset();
+    while (uartif.rst) begin
+      uartif.tx_data     <= '0;
+      uartif.length      <= '0;
+      uartif.parity_en   <= 1'b0;
+      uartif.parity_type <= 1'b0;
+      uartif.stop2       <= 1'b0;
+      uartif.rx_start    <= 1'b0;
+      uartif.tx_start    <= 1'b0;
+      @(posedge uartif.clk);
+    end
+  endtask
+
+  virtual task run_phase(uvm_phase phase);
+    transaction tr;
+    drive_reset();
+    forever begin
+      seq_item_port.get_next_item(tr);
+
+      @(posedge uartif.clk);
+      uartif.tx_data     <= tr.tx_data;
+      uartif.length      <= tr.length;
+      uartif.parity_en   <= tr.parity_en;
+      uartif.parity_type <= tr.parity_type;
+      uartif.stop2       <= tr.stop2;
+      uartif.rx_start    <= tr.rx_start;
+      uartif.tx_start    <= tr.tx_start;
+
+      @(posedge uartif.tx_done);
+      uartif.tx_start <= 1'b0;
+
+      `uvm_info("DRV",
+        $sformatf("Transaction sent: tx_data=0x%0h", tr.tx_data),
+        UVM_NONE);
+
+      seq_item_port.item_done();
+    end
+  endtask
+endclass
+
+//====================================================
+// Monitor
+//====================================================
+class mon extends uvm_monitor;
+  `uvm_component_utils(mon)
+
+  uvm_analysis_port#(transaction) send;
+  transaction tr;
+  virtual uart_if uartif;
+
+  function new(string name="mon", uvm_component parent=null);
+    super.new(name,parent);
+  endfunction
+
+  virtual function void build_phase(uvm_phase phase);
+    super.build_phase(phase);
+    tr = transaction::type_id::create("tr");
+    send = new("send", this);
+    if(!uvm_config_db#(virtual uart_if)::get(this,"","uartif", uartif))
+      `uvm_error("MON","Cannot get UART interface");
+  endfunction
+
+  virtual task run_phase(uvm_phase phase);
+    forever begin
+      @(posedge uartif.clk);
+      tr.baud        = uartif.baud;
+      tr.length      = uartif.length;
+      tr.parity_type = uartif.parity_type;
+      tr.parity_en   = uartif.parity_en;
+      tr.stop2       = uartif.stop2;
+      tr.tx_data     = uartif.tx_data;
+      tr.tx_start    = uartif.tx_start;
+      tr.rx_start    = uartif.rx_start;
+
+      tr.tx_done     = uartif.tx_done;
+      tr.rx_done     = uartif.rx_done;
+      tr.tx_err      = uartif.tx_err;
+      tr.rx_err      = uartif.rx_err;
+      tr.rx_out      = uartif.rx_out;
+
+          send.write(tr);
+  
+    
+    end
+  endtask
+endclass
+
+//====================================================
+// Scoreboard
+//====================================================
+class sco extends uvm_scoreboard;
+  `uvm_component_utils(sco)
+
+  // Receive transactions from the monitor
+  uvm_analysis_imp#(transaction, sco) recv;
+
+  bit [7:0] tx_q[$];
+  bit [7:0] rx_q[$];
+  bit last_tx_start = 0;
+  bit last_rx_done = 0;
+
+  function new(string name = "sco", uvm_component parent = null);
+    super.new(name, parent);
+  endfunction
+
+  virtual function void build_phase(uvm_phase phase);
+    super.build_phase(phase);
+    recv = new("recv", this);
+  endfunction
+
+
+  virtual function void write(transaction tr);
+    if (tr.tx_start && !last_tx_start)begin
+      tx_q.push_back(tr.tx_data);
+      `uvm_info("SCO",
+                $sformatf("TX queued -> %0d", tr.tx_data), UVM_LOW)
+    end
+    last_tx_start = tr.tx_start;
+    if (tr.rx_done && !last_rx_done)begin
+      rx_q.push_back(tr.rx_out);
+       `uvm_info("SCO",
+        $sformatf("RX queued -> %0d", tr.rx_out), UVM_LOW)
+    end
+    last_rx_done = tr.rx_done;
+  endfunction
+
+  virtual function void check_phase(uvm_phase phase);
+    super.check_phase(phase);
+
+    if (tx_q.size() != rx_q.size()) begin
+      `uvm_error("SCO",
+        $sformatf("Size mismatch: TX=%0d, RX=%0d",
+                  tx_q.size(), rx_q.size()))
+    end
+    else begin
+      foreach (tx_q[i]) begin
+        if (tx_q[i] != rx_q[i]) begin
+          `uvm_error("SCO",
+            $sformatf("Mismatch at %0d: TX=%0d, RX=%0d",
+                      i, tx_q[i], rx_q[i]))
+        end
+      end
+      `uvm_info("SCO",
+        "All transmitted and received data matched.",
+        UVM_LOW)
+    end
+  endfunction
+endclass
+
+
+//====================================================
+// Agent
+//====================================================
+class agent extends uvm_agent;
+  `uvm_component_utils(agent)
+
+  drv d;
+  mon m;
+  uvm_sequencer#(transaction) seqr;
+
+  function new(string name="agent", uvm_component parent=null);
+    super.new(name,parent);
+  endfunction
+
+  virtual function void build_phase(uvm_phase phase);
+    super.build_phase(phase);
+    d    = drv::type_id::create("d",this);
+    m    = mon::type_id::create("m",this);
+    seqr = uvm_sequencer#(transaction)::type_id::create("seqr",this);
+  endfunction
+
+  virtual function void connect_phase(uvm_phase phase);
+    super.connect_phase(phase);
+    d.seq_item_port.connect(seqr.seq_item_export);
+  endfunction
+endclass
+
+//====================================================
+// Environment
+//====================================================
+class env extends uvm_env;
+  `uvm_component_utils(env)
+
+  agent a;
+  sco s;
+
+  function new(string name="env", uvm_component parent=null);
+    super.new(name,parent);
+  endfunction
+
+  virtual function void build_phase(uvm_phase phase);
+    super.build_phase(phase);
+    a = agent::type_id::create("a",this);
+    s = sco::type_id::create("s",this);
+  endfunction
+
+  virtual function void connect_phase(uvm_phase phase);
+    super.connect_phase(phase);
+    a.m.send.connect(s.recv);
+  endfunction
+endclass
+
+//====================================================
+// Test
+//====================================================
+class test extends uvm_test;
+  `uvm_component_utils(test)
+
+  env e;
+  rand_up bup;
+
+  function new(string name="test", uvm_component parent=null);
+    super.new(name,parent);
+  endfunction
+
+  virtual function void build_phase(uvm_phase phase);
+    super.build_phase(phase);
+    e   = env::type_id::create("env",this);
+    bup = rand_up::type_id::create("bup");
+  endfunction
+
+  virtual task run_phase(uvm_phase phase);
+    phase.raise_objection(this);
+    bup.start(e.a.seqr);
+    #4000
+    phase.drop_objection(this);
+  endtask
+endclass
+
+//====================================================
+// Testbench Module
+//====================================================
+module tb;
+  uart_if uartif();
+
+  // Clock generation
+  initial begin
+    uartif.clk = 0;
+    forever #1 uartif.clk = ~uartif.clk;
+  end
+  
+   initial begin
+    uartif.rst = 1;       // Assert reset
+    #2;                  
+    uartif.rst = 0;       // Deassert reset
+  end
+
+
+  // DUT instance
+  uart_top dut (
+    .clk(uartif.clk),
+    .rst(uartif.rst),
+    .baud(uartif.baud),
+    .length(uartif.length),
+    .parity_type(uartif.parity_type),
+    .parity_en(uartif.parity_en),
+    .stop2(uartif.stop2),
+    .tx_done(uartif.tx_done),
+    .rx_done(uartif.rx_done),
+    .tx_err(uartif.tx_err),
+    .rx_err(uartif.rx_err),
+    .rx_out(uartif.rx_out),
+    .tx_start(uartif.tx_start),
+    .rx_start(uartif.rx_start),
+    .tx_data(uartif.tx_data)
+  );
+
+  // UVM configuration
+  initial begin
+    uvm_config_db #(virtual uart_if)::set(null, "*", "uartif", uartif);
+    run_test("test");
+  end
+
+  // VCD dump
+  initial begin
+    $dumpfile("dump.vcd");
+    $dumpvars(0, tb);
+  end
+endmodule
+
+
